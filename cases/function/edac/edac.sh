@@ -125,6 +125,7 @@ inject_lot_ce()
 	local rand_addr
 	local test_pfn
 	local test_addr
+	local count=1
 
 	dmesg -c &> /dev/null
 	: > edac_mesg
@@ -155,6 +156,13 @@ inject_lot_ce()
 			echo $test_addr > $EINJ_IF/param1
 			echo 1 > $EINJ_IF/error_inject
 			dmesg -c >> edac_mesg
+			# to avoid triggering cmci storm
+			if [ $count -ge 10 ]; then
+				count=1
+				sleep 1
+			else
+				let "count += 1"
+			fi
 		done
 	done < iomem_tmp
 	# avoid some messages coming later
@@ -167,6 +175,7 @@ inject_lot_ce()
 inject_spec_addr()
 {
 	local addr
+	local count=1
 
 	dmesg -c &> /dev/null
 	echo $ERR_TYPE > $EINJ_IF/error_type
@@ -182,6 +191,13 @@ inject_spec_addr()
 		echo $addr > $EINJ_IF/param1
 		echo 1 > $EINJ_IF/error_inject
 		check_result "$line"
+		# to avoid triggering cmci storm
+		if [ $count -ge 10 ]; then
+			count=1
+			sleep 1
+		else
+			let "count += 1"
+		fi
 	done < $EDAC_REF_FILE
 }
 
