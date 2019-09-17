@@ -59,8 +59,8 @@ function k_tree_diff()
 	local ta=$1 # tree a
 	local tb=$2 # tree b
 	
-	local md5a=$(run_quiet cd $ta; find | md5sum | awk '{ print $1}')
-	local md5b=$(run_quiet cd $tb; find | md5sum | awk '{ print $1}')
+	local md5a=$(run_quiet cd $ta; find | sort | md5sum | awk '{ print $1}')
+	local md5b=$(run_quiet cd $tb; find | sort | md5sum | awk '{ print $1}')
 
 	if [ $md5a = $md5b ];then
 		 return 0
