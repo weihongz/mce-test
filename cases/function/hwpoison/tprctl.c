@@ -7,12 +7,20 @@
 #include <sys/prctl.h>
 #include <setjmp.h>
 #include <signal.h>
+#include <errno.h>
 
 #define err(x) perror("FAILURE: " x), exit(1)
 #define fail(x) printf("FAILURE: " x "\n"), exit(1)
 #define mb() asm volatile("" ::: "memory")
 
 #define MADV_POISON 100
+
+static int madvise_poison(void *addr, size_t length, int advice)
+{
+	int ret = madvise(addr, length, advice);
+
+	return (ret == -1 && errno == EHWPOISON) ? 0 : ret;
+}
 
 /*
  * Set early/late kill mode for hwpoison memory corruption.
@@ -48,7 +56,7 @@ void test(int early)
 	if (sigsetjmp(recover_ctx, 1) == 0) { 
 		seq = 0;
 		printf("injection\n");
-		if (madvise(ptr, PS, MADV_POISON) < 0)
+		if (madvise_poison(ptr, PS, MADV_POISON) < 0)
 			err("MADV_POISON");
 		/* early kill should kill here */
 		seq++;

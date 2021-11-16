@@ -44,6 +44,13 @@
 
 #define MADV_POISON 100
 
+static int madvise_poison(void *addr, size_t length, int advice)
+{
+	int ret = madvise(addr, length, advice);
+
+	return (ret == -1 && errno == EHWPOISON) ? 0 : ret;
+}
+
 #define PAGE_SIZE 4 * 1024
 #define SHM_SIZE 1		// in page_size.
 #define SHM_MODE 0600
@@ -249,7 +256,7 @@ static void poison(char *msg, char *page, enum rmode mode, enum test_case tc)
 	recovercount = 5;
 
 	if (sigsetjmp(early_recover_ctx, 1) == 0) {
-		if (madvise(page, PS, MADV_POISON) != 0) {
+		if (madvise_poison(page, PS, MADV_POISON) != 0) {
 			if (errno == EINVAL) {
 				result("failed: Kernel doesn't support poison injection\n");
 				exit(0);

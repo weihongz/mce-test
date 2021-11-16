@@ -53,6 +53,7 @@
 #include <unistd.h>
 #include <getopt.h>
 #include <signal.h>
+#include <errno.h>
 
 #include <sys/prctl.h>
 #include <sys/mman.h>
@@ -73,6 +74,13 @@
 
 #define MADV_POISON			100
 #define MADV_HUGEPAGE			14
+
+static int madvise_poison(void *addr, size_t length, int advice)
+{
+	int ret = madvise(addr, length, advice);
+
+	return (ret == -1 && errno == EHWPOISON) ? 0 : ret;
+}
 
 #define PR_MCE_KILL			33
 #define PR_MCE_KILL_SET			1
@@ -249,7 +257,7 @@ static int prep_injection(void)
 static int do_injection(void)
 {
 	/* Early Kill */
-	if (madvise((void *)corrupt_page_addr, DEFAULT_PS, MADV_POISON) != 0) {
+	if (madvise_poison((void *)corrupt_page_addr, DEFAULT_PS, MADV_POISON) != 0) {
 		print_err("Failed to poison at 0x%p.\n", corrupt_page_addr);
 		printf("[INFO] Please check the authority of current user.\n");
 		return THP_FAILURE;

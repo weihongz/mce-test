@@ -18,6 +18,13 @@
 
 #define MADV_POISON 100
 
+static int madvise_poison(void *addr, size_t length, int advice)
+{
+	int ret = madvise(addr, length, advice);
+
+	return (ret == -1 && errno == EHWPOISON) ? 0 : ret;
+}
+
 #define err(x) perror(x),exit(1)
 
 int count = 20;
@@ -41,7 +48,7 @@ void testmem(char *msg, char *page, int write)
 	printf("%s page %p\n", msg, page);
 	total_cases++;
 	if (sigsetjmp(recover,1) == 0) {
-		if (madvise(page, PS, MADV_POISON) != 0) {
+		if (madvise_poison(page, PS, MADV_POISON) != 0) {
 			failure++;
 			perror("madvise");
 		}

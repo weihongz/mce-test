@@ -42,6 +42,13 @@
 
 #define MADV_POISON 100
 
+static int madvise_poison(void *addr, size_t length, int advice)
+{
+	int ret = madvise(addr, length, advice);
+
+	return (ret == -1 && errno == EHWPOISON) ? 0 : ret;
+}
+
 #define TMPDIR "./"
 #define PATHBUFLEN 100
 
@@ -165,7 +172,7 @@ enum rmode {
 
 void inject_madvise(char *page)
 {
-	if (madvise(page, PS, MADV_POISON) != 0) {
+	if (madvise_poison(page, PS, MADV_POISON) != 0) {
 		if (errno == EINVAL) {
 			printf("Kernel doesn't support poison injection\n");
 			exit(0);
