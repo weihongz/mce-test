@@ -30,13 +30,29 @@ ERR_TYPE=0x8
 URANDOM=0
 PAGESIZE=4096
 # Lots of addresses to be injected, actually it is a number of
-# tested addresses during each iomem range, e.g.,if 3 iomem ranges
-# are used, the total number will be $NUM_TESTADDR * 3 .
+# tested addresses during each iomem range, 
+# e.g.,if 3 iomem ranges are used, the total number will be $NUM_TESTADDR * 3 .
 NUM_TESTADDR=100
 NUM_TOSAVE=20
 COUNT_FAIL=0
 RANGE_SIZE_THR=500
 declare -a LINE_REC
+
+show_progress()
+{
+	local num=$(($1 % 4))
+	local percent=$(($1 * 100 / $NUM_TESTADDR))
+	local ch="-"
+
+	case "$num" in
+		0) ch="-" ;;
+		1) ch="\\" ;;
+		2) ch="|" ;;
+		3) ch="/" ;;
+	esac
+
+	echo -ne "\r $ch [ $percent% ]"
+}
 
 check_support()
 {
@@ -47,6 +63,7 @@ check_support()
 		[ $? -eq 0 ] ||
 			die "module einj is not supported?"
 	fi
+
 	lsmod | grep -q edac
 	[ $? -eq 0 ] ||
 		die "EDAC related modules aren't found."
@@ -89,10 +106,11 @@ save_edac_info()
 	local saved=0
 
 	lines=`cat edac_mesg | grep "EDAC.*CE.*page:" | wc -l`
-        if [ $lines -eq 0 ]; then
-                echo "Fail: can't found EDAC related information"
-                exit 1
-        fi
+	if [ $lines -eq 0 ]; then
+		echo "Fail: can't found EDAC related information"
+		exit 1
+	fi
+
 	echo "Kernel Version: `uname -r`" >> $EDAC_REF_FILE
 	echo -e "Created Date: `date`\n" >> $EDAC_REF_FILE
 	cat edac_mesg | grep "EDAC.*CE.*page:" > $tmpfile
@@ -101,20 +119,23 @@ save_edac_info()
 		get_random
 		rand_line=$(($URANDOM % $lines))
 		if [ $rand_line -eq 0 ]; then
-                        rand_line=1
-                fi
+			rand_line=1
+		fi
 		if [ $saved -eq 0 ]; then
 			LINE_REC[$saved]=$rand_line
 			let "saved += 1"
 			sed -n "${rand_line}p" $tmpfile >> $EDAC_REF_FILE
 			continue
 		fi
+
 		check_same_value $saved $rand_line
 		[ $? -eq 1 ] && continue
+
 		LINE_REC[$saved]=$rand_line
 		let "saved += 1"
 		sed -n "${rand_line}p" $tmpfile >> $EDAC_REF_FILE
 	done
+
 	rm -f $tmpfile
 }
 
@@ -125,13 +146,13 @@ inject_lot_ce()
 	local rand_addr
 	local test_pfn
 	local test_addr
-	local count=1
 
 	dmesg -c &> /dev/null
 	: > edac_mesg
 	echo $ERR_TYPE > $EINJ_IF/error_type
 	echo 0xfffffffffffff000 > $EINJ_IF/param2
 	echo 0x0 > $EINJ_IF/notrigger
+
 	get_random
 	cat /proc/iomem | grep "System RAM" | cut -d ':' -f1 > iomem_tmp
 	echo "Inject a lot of CE memory errors into some of the following addresses:"
@@ -143,11 +164,12 @@ inject_lot_ce()
 		[[ $start_addr -lt 0x100000 ]] && continue
 		# skip injecting error into small memory areas(<500MB)
 		[[ $(($end_addr - $start_addr)) -lt $(($RANGE_SIZE_THR * 0x100000)) ]] && continue
-		printf "0x%016lx - 0x%016lx\n" $start_addr $end_addr
+		printf "\r0x%016lx - 0x%016lx\n" $start_addr $end_addr
 		rand_addr=$(($start_addr + $URANDOM % ($end_addr - $start_addr)))
 		if [[ $(($rand_addr + $NUM_TESTADDR * $PAGESIZE)) -gt $end_addr ]]; then
 			rand_addr=$(printf "0x%lx" $start_addr)
 		fi
+
 		for i in `seq 1 $NUM_TESTADDR`
 		do
 			let "test_pfn = $rand_addr / $PAGESIZE + $i"
@@ -155,16 +177,14 @@ inject_lot_ce()
 			[[ $test_addr -gt $end_addr ]] && break
 			echo $test_addr > $EINJ_IF/param1
 			echo 1 > $EINJ_IF/error_inject
+			# add engough delay for avoid triggering cmci storm
+			sleep 0.5
 			dmesg -c >> edac_mesg
-			# to avoid triggering cmci storm
-			if [ $count -ge 10 ]; then
-				count=1
-				sleep 1
-			else
-				let "count += 1"
-			fi
+			show_progress "$i"
 		done
+		sleep 3
 	done < iomem_tmp
+	echo -ne "\rFinished error injection for reference file\n"
 	# avoid some messages coming later
 	sleep 1
 	dmesg -c >> edac_mesg
@@ -175,12 +195,12 @@ inject_lot_ce()
 inject_spec_addr()
 {
 	local addr
-	local count=1
 
 	dmesg -c &> /dev/null
 	echo $ERR_TYPE > $EINJ_IF/error_type
 	echo 0xfffffffffffff000 > $EINJ_IF/param2
 	echo 0x0 > $EINJ_IF/notrigger
+
 	while read line
 	do
 		# check only EDAC related information
@@ -190,14 +210,10 @@ inject_spec_addr()
 		#printf "addr=0x%x\n" $addr
 		echo $addr > $EINJ_IF/param1
 		echo 1 > $EINJ_IF/error_inject
+		# add engough delay to get full kernel message
+		sleep 0.5
+		#check the new kernel message with ref message
 		check_result "$line"
-		# to avoid triggering cmci storm
-		if [ $count -ge 10 ]; then
-			count=1
-			sleep 1
-		else
-			let "count += 1"
-		fi
 	done < $EDAC_REF_FILE
 }
 
@@ -233,6 +249,7 @@ check_result()
 check_mem_conf()
 {
 	local tmpfile=$(mktemp)
+
 	dmidecode -t 17 > $tmpfile
 	diff -q $tmpfile $MEM_CONF_FILE &> /dev/null
 	if [ $? -eq 0 ]; then
@@ -246,11 +263,9 @@ check_mem_conf()
 
 cleanup()
 {
-	rm -f iomem_tmp
-	rm -f edac_mesg
+	rm -f iomem_tmp edac_mesg 
 }
 
-trap "cleanup" 0 2 9 15
 main()
 {
 	if [ `id -u` -ne 0 ]; then
@@ -279,6 +294,12 @@ main()
 	else
 		echo -e "\nTest PASS\n" | tee -a $LOG_FILE
 	fi
+
+	cleanup
+
 	echo "More detail please check log in $LOG_FILE"
 }
+
+trap "cleanup; exit 1;" 2 9 15
+
 main
