@@ -88,6 +88,9 @@ get_random()
 # avoid selecting address at the same line
 check_same_value()
 {
+	if [ $1 -eq 0 ]; then
+		return 0;
+	fi
 
 	for i in `seq 0 $(($1 - 1))`
 	do
@@ -95,6 +98,7 @@ check_same_value()
 			return 1
 		fi
 	done
+
 	return 0
 }
 
@@ -106,8 +110,10 @@ save_edac_info()
 	local saved=0
 
 	lines=`cat edac_mesg | grep "EDAC.*CE.*page:" | wc -l`
-	if [ $lines -eq 0 ]; then
-		echo "Fail: can't found EDAC related information"
+	echo -e "Received $lines EDAC messages in total.\n"
+
+	if [ $lines -lt $NUM_TOSAVE ]; then
+		echo "Fail: can't find enough EDAC related messages"
 		exit 1
 	fi
 
@@ -121,6 +127,7 @@ save_edac_info()
 		if [ $rand_line -eq 0 ]; then
 			rand_line=1
 		fi
+
 		if [ $saved -eq 0 ]; then
 			LINE_REC[$saved]=$rand_line
 			let "saved += 1"
@@ -146,6 +153,7 @@ inject_lot_ce()
 	local rand_addr
 	local test_pfn
 	local test_addr
+	local test_pfn_base
 
 	dmesg -c &> /dev/null
 	: > edac_mesg
@@ -170,29 +178,34 @@ inject_lot_ce()
 			rand_addr=$(printf "0x%lx" $start_addr)
 		fi
 
+		let "test_pfn_base = $rand_addr / $PAGESIZE"
 		for i in `seq 1 $NUM_TESTADDR`
 		do
-			let "test_pfn = $rand_addr / $PAGESIZE + $i"
+			let "test_pfn = $test_pfn_base + $i"
 			test_addr=$(printf "0x%lx" $test_pfn)"000"
 			[[ $test_addr -gt $end_addr ]] && break
+
 			echo $test_addr > $EINJ_IF/param1
 			echo 1 > $EINJ_IF/error_inject
+
 			# add engough delay for avoid triggering cmci storm
 			sleep 0.5
-			dmesg -c >> edac_mesg
 			show_progress "$i"
 		done
+
 		sleep 3
 	done < iomem_tmp
+
 	echo -ne "\rFinished error injection for reference file\n"
 	# avoid some messages coming later
 	sleep 1
+	# save message and config files
 	dmesg -c >> edac_mesg
 	save_edac_info
 	save_memconf
 }
 
-inject_spec_addr()
+test_spec_addr()
 {
 	local addr
 
@@ -263,43 +276,53 @@ check_mem_conf()
 
 cleanup()
 {
-	rm -f iomem_tmp edac_mesg 
+	rm -f iomem_tmp edac_mesg
 }
 
 main()
 {
+	local ret=0
 	if [ `id -u` -ne 0 ]; then
 		echo "Must be run as root"
-	fi
-	check_support
-	if [ ! -e $EDAC_REF_FILE ]; then
-		echo "---------------------------------------------------"
-		echo "Reference result doesn't exist, wait to generate..."
-		echo "---------------------------------------------------"
-		inject_lot_ce
-		echo "----------------------------------------------------------------------------"
-		echo "Reference result is already generated, please go test via re-running the script!"
-		echo "----------------------------------------------------------------------------"
 		exit 1
 	fi
+	check_support
+
 	check_mem_conf
-	[ $? -eq 0 ] || \
-		die "memory configuration changed, please delete '$EDAC_REF_FILE', then re-run the test."
+	if [ $? -eq 1 ]; then
+		echo "Memory configuration changed, need to re-generate reference file."
+		rm -r ${EDAC_REF_FILE} ${MEM_CONF_FILE}
+	fi
+
+	if [ ! -e $EDAC_REF_FILE ]; then
+		echo "---------------------------------------------------"
+		echo "Wait to generate reference result..."
+		echo "---------------------------------------------------"
+		inject_lot_ce
+		echo "-----------------------------------------------------"
+		echo "Reference result is already generated, start to test!"
+		echo "-----------------------------------------------------"
+	fi
+
 	mkdir -p $LOG_DIR
 	echo -e "\nKernel Version: `uname -r`\n" | tee -a $LOG_FILE
 	echo -e "Test all addresses in EDAC reference file...\n" | tee -a $LOG_FILE
-	inject_spec_addr
+	test_spec_addr
 	if [ $COUNT_FAIL -gt 0 ]; then
+		ret=1
 		echo -e "\nTest FAIL\n" | tee -a $LOG_FILE
 	else
+		ret=0
 		echo -e "\nTest PASS\n" | tee -a $LOG_FILE
 	fi
 
 	cleanup
 
 	echo "More detail please check log in $LOG_FILE"
+
+	return ${ret}
 }
 
-trap "cleanup; exit 1;" 2 9 15
+trap "cleanup; rm -r ${EDAC_REF_FILE}; exit 1;" 2 9 15
 
 main
