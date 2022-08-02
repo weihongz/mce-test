@@ -36,6 +36,8 @@ NUM_TESTADDR=100
 NUM_TOSAVE=20
 COUNT_FAIL=0
 RANGE_SIZE_THR=500
+
+gen_ref_file=0
 declare -a LINE_REC
 
 show_progress()
@@ -117,6 +119,7 @@ save_edac_info()
 		exit 1
 	fi
 
+	gen_ref_file=1
 	echo "Kernel Version: `uname -r`" >> $EDAC_REF_FILE
 	echo -e "Created Date: `date`\n" >> $EDAC_REF_FILE
 	cat edac_mesg | grep "EDAC.*CE.*page:" > $tmpfile
@@ -142,7 +145,7 @@ save_edac_info()
 		let "saved += 1"
 		sed -n "${rand_line}p" $tmpfile >> $EDAC_REF_FILE
 	done
-
+	gen_ref_file=0
 	rm -f $tmpfile
 }
 
@@ -277,6 +280,10 @@ check_mem_conf()
 cleanup()
 {
 	rm -f iomem_tmp edac_mesg
+	# remove reference result file during abnormal exit
+	if [ "$gen_ref_file" -eq "1" ]; then
+		rm -r ${EDAC_REF_FILE}
+	fi
 }
 
 main()
@@ -323,6 +330,6 @@ main()
 	return ${ret}
 }
 
-trap "cleanup; rm -r ${EDAC_REF_FILE}; exit 1;" 2 9 15
+trap "cleanup; exit 1;" 2 9 15
 
 main
