@@ -104,12 +104,31 @@ check_same_value()
 	return 0
 }
 
+# Two kind similar EDAC information for one address may be received when enabling
+# eMCA in BIOS setting on some platforms. One of them includes incomplete EDAC
+# information, such as invalid Machine Check bank information, e.g., the following
+# is received on CLX-4S,
+# "EDAC skx MC4: CPU 0: Machine Check Event: 0 Bank 255:940000000000009f",
+# "... EDAC MC4: 0 CE ... page:0x1aa1d855 ... err_code:0000:009f ...".
+# We should filter out it to avoid affecting test result.
+check_incomplete()
+{
+	local err_code
+
+	err_code=$(echo "$1" | grep -o "err_code[:a-f0-9x]*" | cut -d ':' -f 3)
+	if [ "${err_code: -1}" == "f" ]; then
+		return 1
+	fi
+	return 0
+}
+
 save_edac_info()
 {
 	local lines
 	local rand_line
 	local tmpfile=$(mktemp)
 	local saved=0
+	local edac_str
 
 	lines=`cat edac_mesg | grep "EDAC.*CE.*page:" | wc -l`
 	echo -e "Received $lines EDAC messages in total.\n"
@@ -141,9 +160,13 @@ save_edac_info()
 		check_same_value $saved $rand_line
 		[ $? -eq 1 ] && continue
 
+		edac_str=$(sed -n "${rand_line}p" $tmpfile)
+		check_incomplete "$edac_str"
+		[ $? -eq 1 ] && continue
+
 		LINE_REC[$saved]=$rand_line
 		let "saved += 1"
-		sed -n "${rand_line}p" $tmpfile >> $EDAC_REF_FILE
+		echo "$edac_str" >> $EDAC_REF_FILE
 	done
 	gen_ref_file=0
 	rm -f $tmpfile
@@ -160,6 +183,7 @@ inject_lot_ce()
 
 	dmesg -c &> /dev/null
 	: > edac_mesg
+
 	echo $ERR_TYPE > $EINJ_IF/error_type
 	echo 0xfffffffffffff000 > $EINJ_IF/param2
 	echo 0x0 > $EINJ_IF/notrigger
@@ -167,6 +191,7 @@ inject_lot_ce()
 	get_random
 	cat /proc/iomem | grep "System RAM" | cut -d ':' -f1 > iomem_tmp
 	echo "Inject a lot of CE memory errors into some of the following addresses:"
+
 	while read line
 	do
 		start_addr=`echo $line | awk -F '-' '{print "0x"$1}'`
@@ -210,14 +235,14 @@ inject_lot_ce()
 
 write_log()
 {
-        echo "-----------------------" >> $LOG_FILE
-        printf "0x%016lx %s\n" $1 $2 | tee -a $LOG_FILE
-        echo "-----------------------" >> $LOG_FILE
-        echo -e "\nEDAC message expected in reference file:\n" >> $LOG_FILE
-        echo -e "$3\n" >> $LOG_FILE
-        echo -e "\nEDAC messages actually obtained from dmesg:\n" >> $LOG_FILE
-        dmesg -c >> $LOG_FILE
-        echo >> $LOG_FILE
+	echo "-----------------------" >> $LOG_FILE
+	printf "0x%016lx %s\n" $1 $2 | tee -a $LOG_FILE
+	echo "-----------------------" >> $LOG_FILE
+	echo -e "\nEDAC message expected in reference file:\n" >> $LOG_FILE
+	echo -e "$3\n" >> $LOG_FILE
+	echo -e "\nEDAC messages actually obtained from dmesg:\n" >> $LOG_FILE
+	dmesg -c >> $LOG_FILE
+	echo >> $LOG_FILE
 }
 
 # On some platforms(e.g., clx-4s), there is actually no 'All' option value can
@@ -242,14 +267,17 @@ test_spec_addr()
 		echo "$line" | grep -q EDAC
 		[ $? -ne 0 ] && continue
 		addr=$(echo "$line" | grep -o "page:0x[a-f0-9]*" | cut -d':' -f2)"000"
+
 		for retry in `seq 1 ${retry_cnt}`
 		do
 			echo $addr > $EINJ_IF/param1
 			echo 1 > $EINJ_IF/error_inject
 			# Add enough delay to get full kernel message
 			# and avoid CE error count accumulation on same address.
-			# otherwise need to handle multi error count cases in checn_result
+			# otherwise need to handle multi error count cases
+			# in check_result
 			sleep 1
+
 			#check the new kernel message with ref message
 			check_result "$line"
 			if [ $? -eq 0 ]; then
@@ -269,10 +297,12 @@ check_result()
 	local tmpstr
 	local edac_str
 	local ret=0
+
 	addr=$(echo "$@" | grep -o "page:0x[a-f0-9]*" | cut -d':' -f2)"000"
 	tmpstr="$@"
 	# remove timestamp in head of each line
 	edac_str=${tmpstr#\[*.*\] }
+
 	dmesg | grep -q "$edac_str"
 	if [ $? -ne 0 ]; then
 		# re-check it to avoid later coming message
@@ -312,10 +342,12 @@ cleanup()
 main()
 {
 	local ret=0
+	# check the user
 	if [ `id -u` -ne 0 ]; then
 		echo "Must be run as root"
 		exit 1
 	fi
+
 	check_support
 
 	check_mem_conf
