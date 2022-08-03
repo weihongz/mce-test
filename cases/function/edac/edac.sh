@@ -208,11 +208,30 @@ inject_lot_ce()
 	save_memconf
 }
 
+write_log()
+{
+        echo "-----------------------" >> $LOG_FILE
+        printf "0x%016lx %s\n" $1 $2 | tee -a $LOG_FILE
+        echo "-----------------------" >> $LOG_FILE
+        echo -e "\nEDAC message expected in reference file:\n" >> $LOG_FILE
+        echo -e "$3\n" >> $LOG_FILE
+        echo -e "\nEDAC messages actually obtained from dmesg:\n" >> $LOG_FILE
+        dmesg -c >> $LOG_FILE
+        echo >> $LOG_FILE
+}
+
+# On some platforms(e.g., clx-4s), there is actually no 'All' option value can
+# be available for 'Correct Error Threshold' BIOS setup option, which can be set
+# as the minimum value(<=5). EDAC messages for some addresses may be lost during
+# test. To work around it, when one address test fail, we retry 5 times, if the
+# EDAC message for this address is still lost, we think this address test fail.
 test_spec_addr()
 {
+	local retry_cnt=5
 	local addr
 
 	dmesg -c &> /dev/null
+	# inject memory CE to spec address from reference file
 	echo $ERR_TYPE > $EINJ_IF/error_type
 	echo 0xfffffffffffff000 > $EINJ_IF/param2
 	echo 0x0 > $EINJ_IF/notrigger
@@ -223,13 +242,24 @@ test_spec_addr()
 		echo "$line" | grep -q EDAC
 		[ $? -ne 0 ] && continue
 		addr=$(echo "$line" | grep -o "page:0x[a-f0-9]*" | cut -d':' -f2)"000"
-		#printf "addr=0x%x\n" $addr
-		echo $addr > $EINJ_IF/param1
-		echo 1 > $EINJ_IF/error_inject
-		# add engough delay to get full kernel message
-		sleep 0.5
-		#check the new kernel message with ref message
-		check_result "$line"
+		for retry in `seq 1 ${retry_cnt}`
+		do
+			echo $addr > $EINJ_IF/param1
+			echo 1 > $EINJ_IF/error_inject
+			# Add enough delay to get full kernel message
+			# and avoid CE error count accumulation on same address.
+			# otherwise need to handle multi error count cases in checn_result
+			sleep 1
+			#check the new kernel message with ref message
+			check_result "$line"
+			if [ $? -eq 0 ]; then
+				write_log $addr "PASS" "$line"
+				break
+			elif [ "$retry" -eq "${retry_cnt}" ]; then
+				let "COUNT_FAIL += 1"
+				write_log $addr "FAIL" "$line"
+			fi
+		done
 	done < $EDAC_REF_FILE
 }
 
@@ -238,7 +268,7 @@ check_result()
 	local addr
 	local tmpstr
 	local edac_str
-
+	local ret=0
 	addr=$(echo "$@" | grep -o "page:0x[a-f0-9]*" | cut -d':' -f2)"000"
 	tmpstr="$@"
 	# remove timestamp in head of each line
@@ -246,20 +276,13 @@ check_result()
 	dmesg | grep -q "$edac_str"
 	if [ $? -ne 0 ]; then
 		# re-check it to avoid later coming message
-		sleep 1
 		dmesg | grep -q "$edac_str"
-		if [ $? -eq 0 ]; then
-			printf "0x%016lx PASS\n" $addr | tee -a $LOG_FILE
-		else
-			printf "0x%016lx FAIL\n" $addr | tee -a $LOG_FILE
-			let "COUNT_FAIL += 1"
+		if [ $? -ne 0 ]; then
+			ret=1
 		fi
-	else
-		printf "0x%016lx PASS\n" $addr | tee -a $LOG_FILE
 	fi
-	echo -e "\nEDAC dmesg output as below:\n" >> $LOG_FILE
-	dmesg -c >> $LOG_FILE
-	echo >> $LOG_FILE
+
+	return $ret
 }
 
 check_mem_conf()
